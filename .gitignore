@@ -1,0 +1,33 @@
+# uv
+.venv/
+uv.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data (CIFAR-10 자동 다운로드됨)
+data/
+
+# Model weights (용량 큼)
+*.pth
+*.pt
+*.onnx
+
+# Results (수치는 커밋, 바이너리는 제외)
+results/*.png
+results/*.npy
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
