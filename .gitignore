@@ -15,6 +15,7 @@ data/
 *.pth
 *.pt
 *.onnx
+*.onnx.data
 
 # Results (수치는 커밋, 바이너리는 제외)
 results/*.png
