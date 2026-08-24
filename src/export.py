@@ -17,6 +17,10 @@ def export_to_onnx(model, output_path, input_size=(1, 3, 224, 224)):
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+        # 새 dynamo 기반 exporter(기본값)가 만드는 그래프는 shape 정보가 불완전해서
+        # onnxruntime 양자화 전처리(quant_pre_process)가 실패함. 예전 TorchScript 기반
+        # exporter가 더 표준적인 그래프를 만들어서 이걸로 고정함.
+        dynamo=False,
     )
 
 
