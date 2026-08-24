@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import time
 
@@ -57,6 +58,19 @@ def get_model_size_mb(path):
     return total_bytes / (1024 * 1024)
 
 
+RESULTS_PATH = "results/results.csv"
+
+
+def log_result(checkpoint, accuracy, latency_ms, size_mb):
+    os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
+    file_exists = os.path.exists(RESULTS_PATH)
+    with open(RESULTS_PATH, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["checkpoint", "accuracy", "latency_ms", "size_mb"])
+        writer.writerow([checkpoint, f"{accuracy:.2f}", f"{latency_ms:.2f}", f"{size_mb:.2f}"])
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default="checkpoints/baseline.pth")
@@ -82,3 +96,5 @@ if __name__ == "__main__":
     print(f"Test Accuracy: {accuracy:.2f}%")
     print(f"Latency (batch=1): {latency_ms:.2f} ms")
     print(f"Model Size: {size_mb:.2f} MB")
+
+    log_result(args.checkpoint, accuracy, latency_ms, size_mb)
