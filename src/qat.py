@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torchao.quantization.pt2e.quantize_pt2e import prepare_qat_pt2e, convert_pt2e
 from torchao.quantization.pt2e import move_exported_model_to_train, move_exported_model_to_eval
-from torchao.testing.pt2e._xnnpack_quantizer import XNNPACKQuantizer, get_symmetric_quantization_config
+from executorch.backends.xnnpack.quantizer.xnnpack_quantizer import XNNPACKQuantizer, get_symmetric_quantization_config
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -22,9 +22,16 @@ SAVE_PATH = "checkpoints/qat.pth"
 # torch 2.10부터 예전에 쓰던 torch.ao.quantization.quantize_fx(FX graph mode)가 사실상 방치돼서
 # convert_fx() 결과가 깨지는 버그가 있었음(모든 이미지를 한 클래스로만 예측). 새로 권장되는
 # torch.export 기반 pt2e API(prepare_qat_pt2e/convert_pt2e)로 교체함.
-# XNNPACKQuantizer는 원래 공식 API였는데 executorch 패키지 쪽으로 옮겨가면서 torchao에는
-# testing(비공식) 경로에만 사본이 남아있음 — 우리는 배포를 ONNX로 할 거라 executorch까지
-#설치할 필요는 없어서 이 비공식 경로를 그대로 사용 (torchao 버전 올리면 깨질 수 있음, 감안)
+# XNNPACKQuantizer: convert_pt2e() 후 텐서 159개 중 106개가 fp32로 남길래 한때 "quantizer가
+# 일부 레이어를 못 알아보는 커버리지 버그"로 의심하고 executorch 공식 버전으로 바꿔봤는데,
+# 결과가 토씨 하나 안 다르게 동일해서 그 진단 자체가 틀렸음이 확인됨(docx/troubleshooting.md
+# §5) — 106개 중 53개는 원래 fp32로 남는 bias, 나머지 53개는 실제 연산에 안 쓰이는 잔여
+# 사본이고 진짜 연산은 별도의 _frozen_paramN(int8) 53개가 담당 — 애초에 전 레이어 100%
+# 양자화되고 있었음. executorch 공식/torchao 비공식 quantizer가 동등하다는 게 확인됐으므로
+# 이 import는 편의상 유지 중일 뿐, executorch 설치가 필수는 아님.
+# 배포용 ONNX 변환은 convert_pt2e() 결과물 대신 QAT로 개선된 fp32 가중치만 뽑아서 별도
+# 경로(qat_fp32_export.py)로 처리함 — convert_pt2e()가 만드는 quantized_decomposed 커스텀
+# op가 ONNX exporter와 근본적으로 안 맞기 때문(docx/troubleshooting.md §9, §10).
 
 
 def evaluate_pt2e(model, loader, device, desc=None):
