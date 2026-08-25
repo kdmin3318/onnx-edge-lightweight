@@ -1,4 +1,8 @@
 import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/ 아래 common.py 등을 import하기 위함
 
 from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantType, quantize_static
 from torch.utils.data import DataLoader, Subset

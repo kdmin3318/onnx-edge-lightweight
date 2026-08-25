@@ -1,5 +1,9 @@
 import copy
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/ 아래 common.py 등을 import하기 위함
 
 import torch
 import torch.nn as nn
