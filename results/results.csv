@@ -1,7 +1,8 @@
 checkpoint,accuracy,latency_ms,size_mb
-checkpoints/qat.pth,94.89,29.65,10.61
 checkpoints/baseline.pth,95.42,10.33,8.77
 checkpoints/baseline.onnx,95.42,1.86,8.77
-checkpoints/qat.onnx,9.84,7.15,2.73
 checkpoints/baseline_dynamic.onnx,94.99,82.65,2.30
 checkpoints/baseline_static.onnx,94.91,4.04,2.29
+checkpoints/qat.pth,94.57,29.67,10.61
+checkpoints/qat_fp32.onnx,93.33,1.34,8.51
+checkpoints/qat_static.onnx,94.50,4.05,2.30
