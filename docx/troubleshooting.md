@@ -73,8 +73,38 @@
 - **부가 발견(재현성 이슈)**: pt2e에서 activation의 scale/zero_point는 state_dict에 저장되지 않고, `convert_pt2e()` 호출 직전에 흘린 calibration 데이터를 기준으로 그래프에 상수로 박힘. 그래서 동일한 가중치를 다시 불러와도 calibration 데이터가 다르면 정확도가 달라짐 — 직접 재현 실험(64장짜리 즉석 calibration)에서 93.44%가 나와, 학습 중 기록된 94.57%(전체 데이터 기준)와 차이가 남을 확인. `qat.pth`의 int8 정확도 수치는 항상 "언제/얼마나 calibration 했는지"를 같이 밝혀야 함.
 - **최종 평가**: baseline PTQ(94.91%)와 비교해 QAT+PTQ(94.50%)가 오히려 근소하게 낮음. 원인 추정: (1) QAT가 사실상 1 epoch만 유효하게 학습됨(lr=1e-5로 5 epoch 중 1 epoch째에서만 best 갱신), (2) baseline 자체가 이미 PTQ만으로도 손실이 작음(0.5%p) — CIFAR-10 10클래스 대비 ImageNet 사전학습 MobileNetV2의 capacity가 과함(태스크 난이도 대비 여유 capacity가 커서 양자화 노이즈를 쉽게 흡수). 이번 세팅에서는 QAT의 이득이 뚜렷하게 드러나지 않았다는 것 자체가 결과.
 
+## 11. 비구조적(unstructured) 프루닝 — accuracy-vs-sparsity 참고 실험 (2026-08-25)
+
+- **설정**(`src/pruning/unstructured_prune.py`): 기준은 L1 크기(작은 절댓값부터 제거), 범위는 `global_unstructured`(레이어별 개별 기준이 아니라 전체 Conv2d/Linear weight를 한 풀로 놓고 전역 순위로 제거), 대상은 Conv2d/Linear의 `weight`만(bias/BN 제외). one-shot(점진적 아님, fine-tuning 없음)으로 30/50/70/90% 네 지점 측정.
+- **결과**:
+
+  | target sparsity | accuracy |
+  |---|---|
+  | 30% | 94.80% |
+  | 50% | 89.89% |
+  | 70% | 10.64% (붕괴) |
+  | 90% | 10.00% (붕괴) |
+
+- **해석**: 50~70% 사이에 벼랑이 있음 — one-shot으로 이 구간을 넘기면 네트워크가 전혀 적응을 못 하고 랜덤 수준으로 붕괴함. 점진적 프루닝(조금씩 자르고 fine-tuning 반복)이 왜 필요한지를 실측으로 보여주는 근거.
+- **배포 관점 주의**: 이 실험은 accuracy-vs-sparsity 경향만 보기 위함이고, latency/사이즈는 baseline과 사실상 동일함(onnxruntime CPU/ARM 둘 다 unstructured sparse 텐서를 활용하는 conv/matmul 커널이 없어서 0이 섞인 채로 그냥 dense 연산됨) — 그래서 `results.csv`(배포 가능 체크포인트 비교용)에는 넣지 않음. 구조적(structured) 프루닝만 실제 사이즈/latency 이득으로 이어짐(§12).
+- **부가 확인**: sparse(COO) 포맷으로 저장했다고 가정했을 때의 예상 용량도 같이 계산해봄(값 4바이트 + 4차원 conv 텐서라 인덱스 4개×8바이트=32바이트, nnz당 36바이트 필요). dense(8.53MB) 대비 30%(52.93MB)/50%(37.86MB)/70%(22.78MB)는 오히려 sparse가 더 크고, 90%(7.68MB)에 가서야 dense보다 작아짐 — 계산상 손익분기점(약 88.9% = 1 - 4/36)과 실측이 정확히 일치함. "sparsity 90%는 가야 저장 용량 이득을 본다"는 통념의 근거가 바로 이 인덱스 오버헤드.
+
+## 12. 구조적(structured) 프루닝 — `torch_pruning`, one-shot 30% 결과 (2026-08-25)
+
+- **설정**(`src/pruning/structured_prune.py`): `torch_pruning` 1.6.1의 `MagnitudePruner` 사용. 중요도 기준은 `MagnitudeImportance(p=2)`(채널 가중치의 L2 norm), `global_pruning=True`(레이어별 균등이 아니라 전체 채널 풀에서 중요도 낮은 순), 목표 `pruning_ratio=0.3`. `classifier[1]`(출력 10클래스 고정)은 `ignored_layers`로 제외, 입력 채널 수는 dependency graph가 앞단에 맞춰 자동 조정. fine-tuning 없음(one-shot).
+- **결과**: 파라미터 2,236,682 → 1,420,683 (실제 36.5% 감소, 목표 30%보다 더 잘림 — dependency graph 제약 때문). ONNX export 후 실측(`results.csv`): accuracy **12.73%**(사실상 랜덤), latency 2.05ms(baseline.onnx 1.86ms보다 오히려 소폭 증가 — 채널 수가 정돈된 숫자가 아니게 되면서 벡터화 효율이 떨어졌을 가능성), size **5.41MB**(baseline.onnx 8.77MB 대비 -38%, 파라미터 감소율과 거의 일치 — sparse 포맷/전용 커널 없이 dense 그대로 실제 용량 이득이 났다는 게 확인됨, unstructured와 대조적).
+- **정확도 붕괴 원인 추정**: (1) 채널 전체 제거가 개별 가중치 제거보다 훨씬 거친 절단, (2) MobileNetV2가 depthwise separable + residual 구조라 이미 압축된 상태(capacity 여유 적음)라 프루닝 타격을 더 크게 받음, (3) `MagnitudeImportance`(가중치 크기만 봄)가 비교적 단순한 중요도 기준, (4) fine-tuning 없이 one-shot이라 회복 기회 없음. 같은 30% 근방에서도 unstructured(94.80%)와 극명하게 대조됨 — 구조적 프루닝은 같은 비율이라도 unstructured보다 훨씬 민감함을 실측으로 확인.
+- **fine-tuning 결과**(`src/pruning/finetune_pruned.py`, lr=1e-4, Adam, CosineAnnealingLR, 10 epoch): **1 epoch만에 94.42%, 2 epoch에 94.75%**로 거의 baseline(95.42%)/static PTQ(94.91%) 수준까지 급격히 회복됨.
+- **왜 이렇게 빨리 회복되는지**: 프루닝은 남은 가중치의 "값"을 안 건드림(채널만 삭제) — 그런데 BatchNorm의 `running_mean`/`running_var`는 잘리기 전 채널 구성 기준으로 계산된 통계가 그대로 남아있어서, 채널 삭제 직후엔 그 통계가 실제 activation 분포와 어긋나 정규화 자체가 틀어짐. 이게 20층 가까운 깊이를 거치며 누적돼서 12.73%(사실상 랜덤)까지 무너진 것 — 즉 "학습된 정보가 사라져서"가 아니라 "정규화 기준이 안 맞아서" 생긴 붕괴. fine-tuning을 시작하면 BN의 running 통계가 배치마다 지수이동평균으로 빠르게 재조정되고 가중치도 살짝만 보정되면 되므로(처음부터 재학습이 아니라 재보정), baseline 20 epoch/QAT 5 epoch보다 훨씬 빠르게(1~2 epoch) 회복됨. 프루닝 직후 급격한 정확도 붕괴 → fine-tuning 극초반 급반등은 프루닝 관련 논문에서 흔히 보고되는 패턴.
+- **fine-tuning 최종(10 epoch)**: accuracy **95.13%**(baseline 95.42% 대비 -0.29점, 파라미터는 36.5% 적음). ONNX export 후 실측: latency **2.92ms** — 그런데 파라미터가 더 적은데도 `baseline.onnx`(1.86ms)보다 오히려 느림 (아래 `round_to` 항목 참고).
+- **여기에 onnxruntime 정적 PTQ까지 얹어본 결과**(`pruned_structured_static.onnx`): accuracy 93.15%, latency 3.37ms, size **1.50MB**(지금까지 중 제일 작음). 근데 baseline은 PTQ만 얹었을 때 0.5점만 빠졌는데(95.42→94.91) 이 모델은 2점이나 빠짐(95.13→93.15) — 이미 채널을 36.5% 잘라내서 양자화 노이즈를 흡수할 capacity 여유가 baseline보다 적어졌기 때문으로 추정.
+- **latency 이상 현상 원인 규명 및 수정**: `pruned_structured_finetuned.onnx`가 파라미터는 적은데 `baseline.onnx`보다 느린(2.92ms > 1.86ms) 원인을, `MagnitudePruner`가 채널을 자를 때 8/16의 배수 같은 정돈된 개수로 안 맞추고 중요도 순으로만 잘라서 CPU 벡터 연산(SIMD) 효율이 떨어졌기 때문으로 추정 — `pruning_ratio=0.3`에 **`round_to=8`**을 추가해서 재실행.
+  - fine-tune 전(참고용, round_to만 다르게 재현): latency 2.05ms → **1.28ms**로 확 줄어듦 (accuracy는 fine-tune 전이라 9.60%로 의미 없음, 무시)
+  - fine-tune 후(`pruned_structured_finetuned.onnx`, round_to=8 최종): accuracy **94.72%**, latency **1.31ms**(`baseline.onnx`의 1.86ms보다도 빠름 — 전체 체크포인트 중 최저 latency), size 5.25MB. `round_to` 가설이 실측으로 확인됨 — 구조적 프루닝에서 채널 수를 정돈된 배수로 맞추는 게 실제 속도 이득에 중요함.
+
 ## 남은 과제
 
+- 구조적 프루닝+QAT 조합(현재는 프루닝+PTQ만 해봄), 더 높은 비율(50%+)에서 fine-tuning으로 어디까지 버티는지, 지식증류(KD) 실험 — 전부 다음 세션 과제
 - 라즈베리파이 실기기에서 baseline/PTQ 재벤치마킹 (진짜 ARM int8 가속 효과 확인)
 - (스트레치) ONNX+onnxruntime vs ExecuTorch 배포 스택 비교
 - (future work) CIFAR-100처럼 태스크 난이도를 모델 capacity에 더 가깝게 맞춰서 PTQ/QAT 차이가 더 뚜렷해지는지 검증

@@ -6,3 +6,8 @@ checkpoints/baseline_static.onnx,94.91,4.04,2.29
 checkpoints/qat.pth,94.57,29.67,10.61
 checkpoints/qat_fp32.onnx,93.33,1.34,8.51
 checkpoints/qat_static.onnx,94.50,4.05,2.30
+checkpoints/pruned_structured.onnx,12.73,2.05,5.41
+checkpoints/pruned_structured_finetuned.onnx,95.13,2.92,5.41
+checkpoints/pruned_structured_static.onnx,93.15,3.37,1.50
+checkpoints/pruned_structured.onnx,9.60,1.28,5.25
+checkpoints/pruned_structured_finetuned.onnx,94.72,1.31,5.25
