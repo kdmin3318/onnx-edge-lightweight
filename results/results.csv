@@ -11,3 +11,7 @@ checkpoints/pruned_structured_finetuned.onnx,95.13,2.92,5.41
 checkpoints/pruned_structured_static.onnx,93.15,3.37,1.50
 checkpoints/pruned_structured.onnx,9.60,1.28,5.25
 checkpoints/pruned_structured_finetuned.onnx,94.72,1.31,5.25
+checkpoints/kd_student.onnx,96.19,1.85,8.51
+checkpoints/pruned_structured_kd_finetuned.onnx,90.40,1.00,2.04
+checkpoints/pruned_structured_finetuned.onnx,88.25,0.84,2.04
+checkpoints/pruned_structured_kd_resnet_finetuned.onnx,90.16,1.02,2.04

@@ -102,9 +102,40 @@
   - fine-tune 전(참고용, round_to만 다르게 재현): latency 2.05ms → **1.28ms**로 확 줄어듦 (accuracy는 fine-tune 전이라 9.60%로 의미 없음, 무시)
   - fine-tune 후(`pruned_structured_finetuned.onnx`, round_to=8 최종): accuracy **94.72%**, latency **1.31ms**(`baseline.onnx`의 1.86ms보다도 빠름 — 전체 체크포인트 중 최저 latency), size 5.25MB. `round_to` 가설이 실측으로 확인됨 — 구조적 프루닝에서 채널 수를 정돈된 배수로 맞추는 게 실제 속도 이득에 중요함.
 
+## 13. 지식증류(KD) — teacher=resnet50 단독 실험 (2026-08-26)
+
+- **문제의식**: baseline.pth가 이미 95.42%로 높아서, student와 같은 구조(MobileNetV2)를 teacher로 쓰는 self-distillation은 capacity 차이가 없어 의미가 없다고 판단 — teacher가 student보다 실제로 capacity/성능이 나아야 dark knowledge가 의미를 가짐.
+- **teacher 준비**(`src/kd/train_teacher.py`): torchvision `resnet50`(`IMAGENET1K_V2` pretrained backbone)을 baseline.pth와 동일한 프로토콜(20 epoch, Adam lr=1e-3, CosineAnnealingLR)로 CIFAR-10 파인튜닝. **결과: 96.18%**(baseline 대비 +0.76점, capacity 우위 확인). train loss가 0.0018까지 내려감(정답 클래스 확신 ≈99.8%) — 이후 KD의 temperature 설정 근거가 됨.
+- **student 학습**(`src/kd/kd_train.py`): baseline.pth와 동일 프로토콜(pretrained backbone, 20 epoch, Adam 1e-3, cosine annealing)로 MobileNetV2를 처음부터 학습하되, loss만 KD loss로 교체:
+  ```
+  loss = α · CE(student_logit, label) + (1-α) · T² · KLDiv(log_softmax(student/T), softmax(teacher/T))
+  ```
+  - **α=0.3, T=4**로 설정. teacher의 train loss가 거의 0(=99.8% 확신)이라 T 없이 그대로 쓰면 사실상 hard label과 다를 바 없는 신호가 되므로, T로 분포를 부드럽게 펴서 클래스 간 상대적 유사도(dark knowledge)가 드러나게 함. 이 프로젝트 KD 실험에서 유의미하게 조정한 하이퍼파라미터는 α, T 두 개.
+- **결과**(`checkpoints/kd_student.onnx`): accuracy **96.19%**(baseline plain training 95.42% 대비 **+0.77점**, teacher 96.18%와 거의 동일), latency 1.85ms/size 8.51MB(구조가 baseline과 동일해 latency·size는 baseline과 사실상 같음 — 정확도 차이만 KD 효과로 해석 가능).
+- **결론**: capacity가 실제로 더 큰 teacher를 쓸 때만 KD가 의미 있는 이득을 준다는 게 실측으로 확인됨. 같은 구조끼리의 self-distillation은 이 프로젝트에서 시도하지 않음(의미 없다고 판단해 스킵).
+- **다음 단계 설계 근거**(prune+KD+QAT 조합, 웹 검색으로 업계 관행 확인): 구조적 프루닝은 항상 제일 먼저(shape을 바꾸므로), 그 다음 fp32 상태에서 KD로 최대 회복, 그 회복된 모델을 QAT 시작점으로 사용 — QAT 중에도 fake-quant 상태(가중치는 여전히 fp32, `convert_pt2e()` 호출 전까지 미분 가능)라 학습 loss를 그대로 KD loss로 바꿔치기할 수 있음. teacher는 체인 전체에서 `baseline.pth`로 일관되게 사용 예정(resnet은 구조가 달라 전달 효율이 떨어질 수 있다고 판단, 프루닝된 student는 어차피 baseline보다도 한참 낮은 상태에서 시작해 baseline만으로 갭 메우기 충분).
+
+## 14. 구조적 프루닝(목표 50%, 실제 76.2%) — plain fine-tune vs KD fine-tune 비교 (2026-08-26)
+
+- **프루닝 결과**(`structured_prune.py`, `pruning_ratio=0.5`, `round_to=8` 유지): 목표는 50%였는데 실제로는 **76.2%** 감소(파라미터 2,236,682 → 532,858). 30%→36.5%때보다 목표-실제 괴리가 훨씬 커짐 — MobileNetV2의 depthwise separable + residual 구조 때문에 dependency graph상 묶여서 같이 잘려나가는 채널이 비율이 높아질수록 비선형적으로 늘어나는 것으로 추정. fine-tune 전 accuracy **10.00%**(정확히 랜덤 수준, 30%때 12.73%보다 더 완전히 붕괴). ONNX export/parity는 정상(max diff 1.91e-06) — 에러 없이 통과.
+- **성격이 30%때와 다름**: 30%는 파라미터는 안 건드리고 BN 통계만 어긋나서 생긴 붕괴라 "재보정"만으로 1~2 epoch 만에 거의 다 회복됐음(§12). 76.2%는 파라미터 자체가 원래의 4분의 1도 안 남은 상태라 진짜 **capacity 한계**에 부딪힌 것으로 보임 — 10 epoch 내내 서서히 오르기만 하고 급반등이 없음(BN 재보정이 아니라 진짜 재학습이 필요한 상태).
+- **plain fine-tune vs KD fine-tune 비교**(`finetune_pruned.py` vs `kd_finetune_pruned.py`, 둘 다 동일 조건: 같은 76.2% 프루닝 체크포인트 입력, 10 epoch, lr=1e-4, Adam, CosineAnnealingLR — **loss 함수만 다름**. KD는 teacher=`baseline.pth`, α=0.3, T=4):
+
+  | 방식 | accuracy | latency | size |
+  |---|---|---|---|
+  | plain fine-tune | 88.25% | 0.84ms | 2.04MB |
+  | KD fine-tune | **90.40%** | 1.00ms | 2.04MB |
+
+  - accuracy **+2.15%p** KD 우위. size는 완전히 동일(같은 구조에서 가중치 값만 다르게 학습된 거라 당연). latency 차이(0.84 vs 1.00ms)는 구조가 100% 동일해 이론상 같아야 하므로 **측정 노이즈**(공유 서버 부하 변동 등)로 판단 — 실제 latency는 둘 다 ~0.9ms대로 봄.
+  - loss 함수 외 모든 조건이 동일한 가장 통제된 비교라, "KD는 student-teacher 간 capacity/성능 갭이 클수록 이득도 커진다"는 가설을 뒷받침: baseline 규모 KD(§13, teacher=resnet50, 갭 작음)는 +0.77%p, 이번(teacher=baseline.pth, 갭 큼)은 +2.15%p.
+  - 지금까지 나온 전체 체크포인트 중 latency(0.84~1.00ms)·size(2.04MB) 둘 다 최소 — 정확도(88~90%대)를 상당히 내주는 대신 극단적으로 가볍고 빠른 지점.
+- **teacher 선택 재검증**(`kd_finetune_pruned_resnet.py`): 위 KD fine-tune은 teacher=`baseline.pth`(같은 MobileNetV2 구조, 95.42%)였는데, teacher 자체 정확도는 §13의 `teacher_resnet.pth`(96.18%)가 더 높으므로 "그쪽을 썼어야 하지 않나" 의문이 들어 teacher만 resnet50으로 바꿔 동일 조건(76.2% 프루닝 체크포인트, α=0.3, T=4, 10 epoch)으로 재실행.
+  - 결과: accuracy **90.16%**, latency 1.02ms, size 2.04MB — baseline-teacher 버전(90.40%)보다 **0.24%p 낮음**.
+  - 해석: 이 정도 차이는 두 스크립트 다 random seed 고정이 없어(`train_loader` shuffle, `RandomHorizontalFlip`/`RandomRotation`, classifier의 `Dropout(0.2)`) 학습 자체의 run-to-run 변동 범위 안에 있다고 판단 — **teacher 선택에 따른 유의미한 차이로 보기 어려움**(반복 실험/seed 고정 없이는 확정 불가). "같은 구조 teacher가 전달 효율이 더 좋다"는 가설과 방향은 일치하지만, 이 결과 하나로 그 가설이 입증됐다고 보기엔 근거가 약함 — 결론은 "두 teacher 선택이 실질적으로 동등(±0.3%p 이내)"으로 정리.
+
 ## 남은 과제
 
-- 구조적 프루닝+QAT 조합(현재는 프루닝+PTQ만 해봄), 더 높은 비율(50%+)에서 fine-tuning으로 어디까지 버티는지, 지식증류(KD) 실험 — 전부 다음 세션 과제
+- 다음 주: 지금까지 검증된 기법들(구조적 프루닝 + KD fine-tune + QAT)을 한 파이프라인으로 통합해 "최종 모델" 하나로 정리 — QAT 학습 중에도 fake-quant 상태(가중치는 fp32라 미분 가능)라 loss를 KD loss로 그대로 교체 가능(§13 마지막 항목 참고). teacher는 `baseline.pth`로 일관 사용 예정.
 - 라즈베리파이 실기기에서 baseline/PTQ 재벤치마킹 (진짜 ARM int8 가속 효과 확인)
 - (스트레치) ONNX+onnxruntime vs ExecuTorch 배포 스택 비교
 - (future work) CIFAR-100처럼 태스크 난이도를 모델 capacity에 더 가깝게 맞춰서 PTQ/QAT 차이가 더 뚜렷해지는지 검증

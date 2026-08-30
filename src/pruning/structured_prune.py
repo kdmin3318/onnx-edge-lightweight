@@ -19,7 +19,7 @@ from export import export_to_onnx, check_onnx_model, verify_parity
 BASELINE_CHECKPOINT = "checkpoints/baseline.pth"
 PRUNED_CHECKPOINT = "checkpoints/pruned_structured.pth"  # fine-tuning 스크립트가 이어받는 입력
 OUTPUT_PATH = "checkpoints/pruned_structured.onnx"
-PRUNING_RATIO = 0.3
+PRUNING_RATIO = 0.5
 ROUND_TO = 8  # 남는 채널 수를 8의 배수로 맞춤 — 안 맞으면 CPU 벡터 연산(SIMD) 효율이
               # 떨어져서 파라미터가 줄어도 latency가 오히려 늘어나는 현상이 있었음(결과 참고)
 
